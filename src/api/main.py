@@ -37,6 +37,13 @@ async def lifespan(app: FastAPI):
     # Startup
     configure_logging()
     init_db()
+    
+    # Verify database connection is working
+    from src.data.database import db_manager
+    if not db_manager.health_check():
+        logger.error("Database health check failed after initialization")
+        raise RuntimeError("Database connection failed")
+    
     logger.info("SSA Conjunction Analysis Engine started")
     
     yield

@@ -191,9 +191,9 @@ def init_db():
         db_manager.create_tables()
         logger.info("Database initialized successfully")
     except Exception as e:
-        logger.warning(f"Database initialization failed (may be running in demo mode): {str(e)}")
-        # Continue without database in demo mode
-        pass
+        logger.error(f"Database initialization failed: {str(e)}")
+        # Raise the exception to prevent silent failures
+        raise
 
 
 def close_db():

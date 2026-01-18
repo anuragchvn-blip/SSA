@@ -21,6 +21,14 @@ def create_database_tables():
     try:
         # Get database URL from settings
         database_url = settings.database.sqlalchemy_database_uri
+        
+        # Check if using SQLite fallback
+        if database_url.startswith('sqlite:'):
+            print(f"WARNING: Using SQLite fallback: {database_url}")
+            print("This means PostgreSQL connection parameters are not properly set.")
+            print("Check that POSTGRES_PASSWORD is set to the correct value and not 'change_me_in_production'")
+            return False
+        
         print(f"Connecting to database: {database_url.replace(settings.database.postgres_password, '***')}")
         
         # Create engine
