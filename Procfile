@@ -1,1 +1,1 @@
-web: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+web: python -c "import sys; sys.path.insert(0, '.'); from src.api.main import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8000)"
