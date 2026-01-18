@@ -151,10 +151,12 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "allow"
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "allow",
+        "protected_namespaces": ("settings_", "model_")
+    }
 
 
 # Global settings instance
