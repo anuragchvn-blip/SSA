@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  ssa-engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ssa_engine
+      - POSTGRES_USER=ssa_user
+      - POSTGRES_PASSWORD=ssa_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=DEBUG
+      - SPACETRACK_USERNAME=${SPACETRACK_USERNAME}
+      - SPACETRACK_PASSWORD=${SPACETRACK_PASSWORD}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=ssa_engine
+      - POSTGRES_USER=ssa_user
+      - POSTGRES_PASSWORD=ssa_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

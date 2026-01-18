@@ -1,46 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-.coverage
-.cache
-.pytest_cache/
-.hypothesis/
-.coverage.*
-.tox/
-nox/
-htmlcov/
-.cov/
-.pyre/
-.pytype/
-.dmypy.json
-.dSYM/
-.DS_Store
-
 # Virtual Environment
 venv/
 env/
 ENV/
 .venv/
-.env/
+
+# Environment variables
+.env
+.env.local
+.env.dev
+.env.test
+.env.production
 
 # IDE
 .vscode/
@@ -58,19 +27,11 @@ ENV/
 ehthumbs.db
 Thumbs.db
 Icon?
-*/
 
 # Logs
 *.log
 logs/
 *.out
-
-# Environment variables
-.env
-.env.local
-.env.dev
-.env.test
-.env.production
 
 # Database
 *.db
@@ -80,6 +41,10 @@ logs/
 secrets/
 credentials.json
 config.json
+*.key
+*.pem
+*.crt
+*.cert
 
 # Next.js (Frontend)
 frontend/.next/
@@ -95,49 +60,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Runtime
-runtime/
-
 # Test
 coverage/
 htmlcov/
-.coverage.*
-
-# Local configuration
-config/local.yml
-config/development.yml
-
-# Compiled assets
-public/build/
-assets/build/
-
-# Environment specific
-.env*.local
-.env*.backup
-.env*.sample
-.env*.template
-.env*.development.local
-.env*.test.local
-.env*.production.local
 
 # Sensitive files
 private/
 secret/
-key.pem
-cert.pem
-*.key
-*.pem
-*.crt
-*.cert
-
-# Development
-.vs/
-.vscode/
-*.tmp
-*.temp
 
 # Cache
 .cache/
-.node_modules_cache/
 .pytest_cache/
 .hypothesis/
