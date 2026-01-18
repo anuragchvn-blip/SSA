@@ -1,8 +1,12 @@
 #!/bin/bash
 # Database initialization script for Railway deployment
 
-echo "Initializing database schema..."
-python -c "from src.data.database import init_db; init_db()" || echo "Schema already exists"
+echo "Waiting for database to be ready..."
+# Give the database connection time to establish
+sleep 10
+
+echo "Creating database tables..."
+python create_tables.py
 
 echo "Populating TLE data..."
 python populate_tles.py
