@@ -1,0 +1,239 @@
+Metadata-Version: 2.4
+Name: ssa-conjunction-engine
+Version: 1.0.0
+Summary: Production-grade Space Situational Awareness conjunction analysis engine
+Author: Defense SSA Team
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: sgp4>=2.21
+Requires-Dist: orekit>=11.3
+Requires-Dist: astropy>=5.3
+Requires-Dist: poliastro>=0.17
+Requires-Dist: skyfield>=1.46
+Requires-Dist: numpy>=1.24
+Requires-Dist: scipy>=1.10
+Requires-Dist: pandas>=2.0
+Requires-Dist: pyarrow>=14.0
+Requires-Dist: scikit-learn>=1.3
+Requires-Dist: xgboost>=2.0
+Requires-Dist: shap>=0.42
+Requires-Dist: fastapi>=0.104
+Requires-Dist: pydantic>=2.4
+Requires-Dist: uvicorn>=0.24
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: alembic>=1.12
+Requires-Dist: psycopg2-binary>=2.9
+Requires-Dist: redis>=5.0
+Requires-Dist: httpx>=0.25
+Requires-Dist: aiofiles>=23.2
+Requires-Dist: prometheus-client>=0.18
+Requires-Dist: structlog>=23.2
+Requires-Dist: sentry-sdk>=1.38
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: celery>=5.3
+Requires-Dist: plotly>=5.15
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Requires-Dist: hypothesis>=6.92; extra == "dev"
+Requires-Dist: black>=23.10; extra == "dev"
+Requires-Dist: flake8>=6.1; extra == "dev"
+Requires-Dist: mypy>=1.7; extra == "dev"
+Requires-Dist: pre-commit>=3.5; extra == "dev"
+
+# SSA Conjunction Analysis Engine
+
+Production-grade Space Situational Awareness conjunction analysis engine for military/defense applications.
+
+## System Overview
+
+This system provides comprehensive conjunction analysis capabilities including:
+- Real-time TLE acquisition from Space-Track
+- High-fidelity orbital propagation (SGP4 + Orekit)
+- Advanced conjunction screening algorithms
+- Monte Carlo collision probability calculations
+- Automated maneuver detection using ML
+- RESTful API for integration
+
+## Key Features
+
+### Data Management
+- **TLE Ingestion**: Automated acquisition from Space-Track with rate limiting
+- **Database Storage**: PostgreSQL with full provenance tracking
+- **Version Control**: Data lineage and audit trails
+
+### Orbital Mechanics
+- **SGP4 Propagation**: Standard two-line element propagation
+- **Orekit Integration**: High-fidelity force modeling (planned)
+- **Covariance Propagation**: Uncertainty quantification (planned)
+
+### Conjunction Analysis
+- **Spatial Screening**: Fast 3D filtering for initial candidates
+- **TCA Calculation**: Time of Closest Approach refinement
+- **Probability Estimation**: Multiple methods (Foster, Monte Carlo, Akella)
+- **Risk Assessment**: Automated alerting for high-probability events
+
+### Machine Learning
+- **Maneuver Detection**: Random Forest-based anomaly detection
+- **Feature Engineering**: Physical residuals and orbital element changes
+- **Explainability**: SHAP values for decision transparency
+
+## Architecture
+
+```
+src/
+├── core/                 # Shared utilities and configuration
+├── data/                 # Data models and storage
+│   ├── ingest/          # TLE acquisition
+│   ├── storage/         # Database repositories
+│   └── versioning/      # Data provenance
+├── propagation/         # Orbital mechanics engines
+├── conjunction/         # Conjunction detection and analysis
+├── ml/                  # Machine learning components
+├── api/                 # REST API endpoints
+├── reports/             # Alert generation and reporting
+└── monitoring/          # Metrics and health checks
+```
+
+## Quick Start
+
+### Prerequisites
+- Python 3.10+
+- PostgreSQL 12+
+- Redis 6+
+- Space-Track.org account
+
+### Installation
+
+1. Clone repository:
+```bash
+git clone <repository-url>
+cd SSA
+```
+
+2. Install dependencies:
+```bash
+pip install -e .
+```
+
+3. Configure environment:
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+4. Initialize database:
+```bash
+# Start PostgreSQL and Redis services
+python -m alembic upgrade head
+```
+
+5. Run development server:
+```bash
+python -m src.api.main
+```
+
+### Docker Deployment
+
+```bash
+# Build and run with docker-compose
+cd docker
+docker-compose up --build
+```
+
+## API Usage
+
+### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+### Conjunction Screening
+```bash
+curl -X POST http://localhost:8000/conjunctions/screen \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "primary_norad_id": 25544,
+    "time_window_hours": 24,
+    "screening_threshold_km": 5
+  }'
+```
+
+## Configuration
+
+Key configuration parameters in `.env`:
+
+```bash
+# Database
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=ssa_engine
+
+# Space-Track API
+SPACETRACK_USERNAME=your_username
+SPACETRACK_PASSWORD=your_password
+
+# API Settings
+JWT_SECRET_KEY=your_secret_key
+API_RATE_LIMIT_REQUESTS_PER_MINUTE=60
+```
+
+## Testing
+
+Run unit tests:
+```bash
+pytest tests/unit/ -v
+```
+
+Run integration tests:
+```bash
+pytest tests/integration/ -v
+```
+
+Generate coverage report:
+```bash
+pytest --cov=src --cov-report=html
+```
+
+## Monitoring
+
+The system exposes Prometheus metrics at `/metrics` endpoint and includes:
+- Request/response metrics
+- Database performance metrics
+- Propagation timing metrics
+- Error rates and latency histograms
+
+## Security
+
+- JWT-based authentication
+- Role-based access control
+- Audit logging for all operations
+- Rate limiting to prevent abuse
+- Secure credential management
+
+## Performance
+
+Typical performance characteristics:
+- TLE ingestion: ~10,000 TLEs/minute
+- Conjunction screening: ~100 satellites/second
+- Pc calculation: <100ms for analytical methods
+- Full catalog screening: <5 minutes for 24-hour window
+
+## Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Implement changes with tests
+4. Submit pull request
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Support
+
+For issues and questions, please contact the development team.
