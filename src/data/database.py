@@ -166,11 +166,12 @@ class DatabaseManager:
             return False
             
         try:
+            from sqlalchemy import text
             with self.engine.connect() as connection:
-                connection.execute("SELECT 1")
+                connection.execute(text("SELECT 1"))
             return True
         except Exception as e:
-            logger.warning("Database health check failed", error=str(e))
+            logger.warning(f"Database health check failed: {str(e)}")
             return False
 
 

@@ -40,9 +40,13 @@ async def lifespan(app: FastAPI):
     
     # Verify database connection is working
     from src.data.database import db_manager
-    if not db_manager.health_check():
-        logger.error("Database health check failed after initialization")
-        raise RuntimeError("Database connection failed")
+    try:
+        if not db_manager.health_check():
+            logger.error("Database health check failed after initialization")
+            raise RuntimeError("Database connection failed")
+    except Exception as e:
+        logger.error(f"Database health check failed: {str(e)}")
+        raise
     
     logger.info("SSA Conjunction Analysis Engine started")
     
