@@ -33,7 +33,7 @@ echo "Populating TLE data..."
 python railway_init.py
 
 echo "Creating conjunction events..."
-python create_conjunctions.py
+python generate_real_conjunctions.py
 
 echo "Starting application server..."
 exec uvicorn src.api.main:app --host 0.0.0.0 --port 8000

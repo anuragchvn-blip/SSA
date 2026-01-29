@@ -102,9 +102,11 @@ def create_sample_conjunctions():
                 # Create conjunction event
                 event = ConjunctionEvent(**event_data)
                 created_event = conj_repo.create(event)
+                session.commit()
                 print(f"Created conjunction event {i+1}: {created_event.primary_norad_id} vs {created_event.secondary_norad_id}")
             except Exception as e:
                 print(f"Failed to create conjunction event {i}: {e}")
+                session.rollback()
         
         print("Sample conjunction events creation complete!")
 
