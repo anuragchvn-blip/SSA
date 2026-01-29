@@ -1,0 +1,45 @@
+# Environment files - use Railway environment variables instead
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Local development
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data and models (should be generated/downloaded)
+ssa_demo.db
+ssa_demo.db-journal
+data/
+models/
+orekit-data/
+
+# Test and documentation
+tests/
+*.md
+*.txt
+LICENSE
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
