@@ -33,7 +33,6 @@ orekit-data/
 # Test and documentation
 tests/
 *.md
-*.txt
 LICENSE
 
 # Logs
