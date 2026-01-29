@@ -30,7 +30,7 @@ echo "Creating database tables..."
 python create_tables.py
 
 echo "Populating TLE data..."
-python populate_tles.py
+python railway_init.py
 
 echo "Creating conjunction events..."
 python create_conjunctions.py

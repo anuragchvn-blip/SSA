@@ -806,6 +806,202 @@ async def get_conjunctions_summary(user: dict = Depends(verify_token)):
         }
 
 
+@app.get("/conjunctions/live-monitoring")
+async def get_live_monitoring_feed(user: dict = Depends(verify_token)):
+    """Get live conjunction monitoring feed with real-time threat assessment."""
+    from src.data.database import db_manager
+    from src.data.storage.tle_repository import TLERepository
+    from src.data.storage.conjunction_repository import ConjunctionEventRepository
+    from datetime import datetime, timedelta, timezone
+    
+    with db_manager.get_session() as session:
+        tle_repo = TLERepository(session)
+        conj_repo = ConjunctionEventRepository(session)
+        
+        # Get all recent TLEs for live monitoring
+        all_tles = tle_repo.get_recent_tles(hours_back=24, limit=500)
+        
+        # Perform live monitoring analysis
+        live_results = conjunction_analyzer.perform_comprehensive_real_time_monitoring(
+            all_tles=all_tles,
+            time_window_hours=24.0,
+            screening_threshold_km=5.0,
+            severe_threshold=1e-3,
+            critical_threshold=1e-2
+        )
+        
+        # Get the most recent actual conjunction events from database
+        recent_events = conj_repo.get_recent_events(hours_back=24, min_probability=1e-6, limit=50)
+        
+        # Categorize events by severity
+        categorized_events = []
+        for event in recent_events:
+            risk_level = "LOW"
+            if event.probability >= 1e-2:
+                risk_level = "CRITICAL"
+            elif event.probability >= 1e-3:
+                risk_level = "HIGH"
+            elif event.probability >= 1e-4:
+                risk_level = "MEDIUM"
+            
+            categorized_events.append({
+                "id": event.id,
+                "primary_norad_id": event.primary_norad_id,
+                "secondary_norad_id": event.secondary_norad_id,
+                "tca_datetime": event.tca_datetime.isoformat(),
+                "miss_distance_meters": event.miss_distance_meters,
+                "probability": event.probability,
+                "relative_velocity_mps": event.relative_velocity_mps,
+                "risk_level": risk_level
+            })
+        
+        # Combine live analysis with actual events
+        return {
+            "live_analysis": live_results,
+            "actual_events": categorized_events[:20],  # Top 20 most recent
+            "monitoring_stats": {
+                "total_objects_tracked": len(all_tles),
+                "active_conjunctions_monitored": len(live_results.get('critical_events', [])) + len(live_results.get('severe_events', [])),
+                "high_risk_predictions": len(live_results.get('severe_events', [])),
+                "critical_risk_predictions": len(live_results.get('critical_events', [])),
+                "last_updated": datetime.utcnow().isoformat()
+            },
+            "threat_levels": {
+                "critical": len([e for e in categorized_events if e['risk_level'] == 'CRITICAL']),
+                "high": len([e for e in categorized_events if e['risk_level'] == 'HIGH']),
+                "medium": len([e for e in categorized_events if e['risk_level'] == 'MEDIUM']),
+                "low": len([e for e in categorized_events if e['risk_level'] == 'LOW'])
+            }
+        }
+
+
+@app.get("/conjunctions/real-time-monitoring")
+async def get_real_time_monitoring(user: dict = Depends(verify_token)):
+    """Get real-time conjunction monitoring results for active threats."""
+    from src.data.database import db_manager
+    from src.data.storage.tle_repository import TLERepository
+    from datetime import datetime, timedelta
+    
+    with db_manager.get_session() as session:
+        tle_repo = TLERepository(session)
+        
+        # Get recent TLEs for analysis (last 24 hours, limited to 50 for performance)
+        recent_tles = tle_repo.get_recent_tles(hours_back=24, limit=50)
+        
+        # For real-time monitoring, we'll analyze a subset of critical satellites
+        # In production, this would be configurable based on mission priorities
+        primary_tles = []
+        catalog_tles = []
+        
+        for tle in recent_tles:
+            # Classify as primary if it's a high-value asset (e.g., government/military satellites)
+            if tle.norad_id < 40000:  # Payload category
+                primary_tles.append(tle)
+            else:
+                catalog_tles.append(tle)
+        
+        # If we don't have enough primaries, use top 10 from recent
+        if len(primary_tles) < 5:
+            primary_tles = recent_tles[:min(10, len(recent_tles))]
+            catalog_tles = recent_tles[len(primary_tles):]
+        
+        # Perform real-time monitoring using the conjunction analyzer
+        try:
+            severe_events = conjunction_analyzer.perform_real_time_monitoring(
+                primary_tles=primary_tles,
+                catalog_tles=catalog_tles,
+                time_window_hours=24.0,
+                screening_threshold_km=5.0,
+                severe_threshold=1e-3
+            )
+            
+            # Format results for response
+            events_list = []
+            for event in severe_events:
+                events_list.append({
+                    "primary_norad_id": event.primary_norad_id,
+                    "secondary_norad_id": event.secondary_norad_id,
+                    "tca_datetime": event.tca_datetime.isoformat(),
+                    "miss_distance_meters": event.miss_distance_meters,
+                    "probability": event.probability,
+                    "relative_velocity_mps": event.relative_velocity_mps,
+                    "risk_level": "CRITICAL" if event.probability >= 1e-3 else "HIGH"
+                })
+            
+            return {
+                "monitoring_active": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                "primary_objects_monitored": len(primary_tles),
+                "catalog_objects_scanned": len(catalog_tles),
+                "severe_threats_detected": len(severe_events),
+                "threats": events_list,
+                "status": "active_monitoring"
+            }
+            
+        except Exception as e:
+            logger.error(f"Real-time monitoring failed: {e}")
+            # Fallback to basic monitoring
+            try:
+                # Get all TLEs for comprehensive monitoring
+                all_tles = tle_repo.get_recent_tles(hours_back=24, limit=200)
+                
+                # Perform comprehensive monitoring
+                results = conjunction_analyzer.perform_comprehensive_real_time_monitoring(
+                    all_tles=all_tles,
+                    time_window_hours=24.0,
+                    screening_threshold_km=5.0,
+                    severe_threshold=1e-3,
+                    critical_threshold=1e-2
+                )
+                
+                # Format results for response
+                critical_events = []
+                severe_events = []
+                
+                for event in results.get('critical_events', []):
+                    critical_events.append({
+                        "primary_norad_id": event.primary_norad_id,
+                        "secondary_norad_id": event.secondary_norad_id,
+                        "tca_datetime": event.tca_datetime.isoformat(),
+                        "miss_distance_meters": event.miss_distance_meters,
+                        "probability": event.probability,
+                        "relative_velocity_mps": event.relative_velocity_mps,
+                        "risk_level": "CRITICAL"
+                    })
+                
+                for event in results.get('severe_events', []):
+                    severe_events.append({
+                        "primary_norad_id": event.primary_norad_id,
+                        "secondary_norad_id": event.secondary_norad_id,
+                        "tca_datetime": event.tca_datetime.isoformat(),
+                        "miss_distance_meters": event.miss_distance_meters,
+                        "probability": event.probability,
+                        "relative_velocity_mps": event.relative_velocity_mps,
+                        "risk_level": "SEVERE"
+                    })
+                
+                return {
+                    "monitoring_active": True,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "total_objects_monitored": len(all_tles),
+                    "critical_threats_detected": len(critical_events),
+                    "severe_threats_detected": len(severe_events),
+                    "total_threats": results.get('total_threats', 0),
+                    "critical_events": critical_events,
+                    "severe_events": severe_events,
+                    "status": "active_comprehensive_monitoring"
+                }
+            
+            except Exception as fallback_error:
+                logger.error(f"Comprehensive monitoring fallback failed: {fallback_error}")
+                return {
+                    "monitoring_active": False,
+                    "error": str(e),
+                    "fallback_error": str(fallback_error),
+                    "status": "monitoring_error"
+                }
+
+
 # Error handlers
 @app.exception_handler(BaseSSAException)
 async def ssa_exception_handler(request, exc: BaseSSAException):
