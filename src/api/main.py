@@ -144,8 +144,7 @@ async def lifespan(app: FastAPI):
         
         while True:
             try:
-                await asyncio.sleep(60)  # Update every 60 seconds
-                
+                # Update cache immediately, then wait 60 seconds for next update
                 async with position_cache["lock"]:
                     logger.info("Updating satellite position cache...")
                     now = datetime.now(timezone.utc)
@@ -189,6 +188,9 @@ async def lifespan(app: FastAPI):
                     position_cache["positions"] = positions
                     position_cache["timestamp"] = now
                     logger.info(f"Position cache updated: {len(positions)} satellites")
+                
+                # Wait 60 seconds before next update
+                await asyncio.sleep(60)
                     
             except asyncio.CancelledError:
                 logger.info("Position cache updater cancelled")
@@ -208,8 +210,7 @@ async def lifespan(app: FastAPI):
         
         while True:
             try:
-                await asyncio.sleep(300)  # Screen every 5 minutes
-                
+                # Run screening immediately, then wait 5 minutes for next cycle
                 logger.info("Running continuous conjunction screening...")
                 with db_manager.get_session() as session:
                     tle_repo = TLERepository(session)
@@ -249,6 +250,9 @@ async def lifespan(app: FastAPI):
                                 continue
                         
                         logger.info(f"Continuous screening generated {events_created} new conjunctions")
+                
+                # Wait 5 minutes before next cycle
+                await asyncio.sleep(300)
                         
             except asyncio.CancelledError:
                 logger.info("Conjunction screening cancelled")
