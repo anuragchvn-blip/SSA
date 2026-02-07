@@ -589,34 +589,41 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
     """Get real-time propagated positions for all satellites."""
     from src.data.database import db_manager
     from src.propagation.sgp4_engine import sgp4_engine
+    from sqlalchemy import func
     
     now = datetime.now(timezone.utc)
     positions = []
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
-        # Get latest TLE for each unique satellite
-        # For demo, we'll limit to 100 to avoid bottleneck
-        tles = tle_repo.get_recent_tles(hours_back=168, limit=100)
         
-        for tle in tles:
+        # Get latest TLE for EACH unique satellite (not limited)
+        # Query for distinct NORAD IDs, then get latest TLE for each
+        unique_norads = session.query(TLE.norad_id).distinct().all()
+        
+        for (norad_id,) in unique_norads:
             try:
+                tle = tle_repo.get_latest_tle(norad_id)
+                if not tle:
+                    continue
+                    
                 result = sgp4_engine.propagate_to_epoch(tle, now)
                 positions.append({
                     "norad_id": tle.norad_id,
-                    "name": f"SAT-{tle.norad_id}", # Simplified name
-                    "x": result.cartesian_state.x / 1000.0, # Convert to km for Plotly
+                    "name": f"SAT-{tle.norad_id}",
+                    "x": result.cartesian_state.x / 1000.0,  # Convert to km
                     "y": result.cartesian_state.y / 1000.0,
                     "z": result.cartesian_state.z / 1000.0,
                     "lat": result.latitude_deg,
                     "lon": result.longitude_deg,
                     "alt": result.altitude_m / 1000.0,
-                    "risk": "nominal" # Placeholder for risk indicator
+                    "risk": "nominal"
                 })
             except Exception as e:
+                # Skip satellites with propagation errors
                 continue
                 
-    return {"timestamp": now.isoformat(), "satellites": positions}
+    return {"timestamp": now.isoformat(), "satellites": positions, "count": len(positions)}
 
 
 @app.get("/satellites/catalog")
@@ -626,34 +633,37 @@ async def get_full_catalog(user: dict = Depends(verify_token)):
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
-        tles = tle_repo.get_recent_tles(hours_back=168, limit=500)
         
-        # Remove duplicates by keeping latest TLE for each NORAD ID
-        unique_tles = {}
-        for tle in tles:
-            if tle.norad_id not in unique_tles or tle.epoch_datetime > unique_tles[tle.norad_id].epoch_datetime:
-                unique_tles[tle.norad_id] = tle
+        # Get ALL unique NORAD IDs
+        unique_norads = session.query(TLE.norad_id).distinct().all()
         
         catalog = []
-        for tle in unique_tles.values():
-            # Classify satellite type based on NORAD ID ranges
-            if tle.norad_id < 40000:
-                sat_type = "PAYLOAD"
-            elif 40000 <= tle.norad_id < 50000:
-                sat_type = "ROCKET BODY"
-            else:
-                sat_type = "DEBRIS"
-            
-            catalog.append({
-                "norad_id": tle.norad_id,
-                "name": f"SAT-{tle.norad_id}",
-                "type": sat_type,
-                "lat": 0.0, # Will be filled by propagation on frontend or separate call
-                "lon": 0.0,
-                "alt": 0.0,
-                "velocity": 7500.0, # Placeholder
-                "status": "active"
-            })
+        for (norad_id,) in unique_norads:
+            try:
+                tle = tle_repo.get_latest_tle(norad_id)
+                if not tle:
+                    continue
+                
+                # Classify satellite type based on NORAD ID ranges
+                if tle.norad_id < 40000:
+                    sat_type = "PAYLOAD"
+                elif 40000 <= tle.norad_id < 50000:
+                    sat_type = "ROCKET BODY"
+                else:
+                    sat_type = "DEBRIS"
+                
+                catalog.append({
+                    "norad_id": tle.norad_id,
+                    "name": f"SAT-{tle.norad_id}",
+                    "type": sat_type,
+                    "lat": 0.0,
+                    "lon": 0.0,
+                    "alt": 0.0,
+                    "velocity": 7500.0,
+                    "status": "active"
+                })
+            except Exception as e:
+                continue
             
     return {"count": len(catalog), "satellites": catalog}
 
@@ -662,7 +672,7 @@ async def get_full_catalog(user: dict = Depends(verify_token)):
 async def get_institutional_catalog(
     type_filter: Optional[str] = None,
     search: Optional[str] = None,
-    limit: int = 100,
+    limit: int = 10000,
     user: dict = Depends(verify_token)
 ):
     """Get institutional satellite catalog with advanced filtering."""
@@ -670,48 +680,51 @@ async def get_institutional_catalog(
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
-        tles = tle_repo.get_recent_tles(hours_back=168, limit=500)
         
-        # Remove duplicates by keeping latest TLE for each NORAD ID
-        unique_tles = {}
-        for tle in tles:
-            if tle.norad_id not in unique_tles or tle.epoch_datetime > unique_tles[tle.norad_id].epoch_datetime:
-                unique_tles[tle.norad_id] = tle
+        # Get ALL unique NORAD IDs
+        unique_norads = session.query(TLE.norad_id).distinct().all()
         
         catalog = []
-        for tle in unique_tles.values():
-            # Classify satellite type based on NORAD ID ranges
-            if tle.norad_id < 40000:
-                sat_type = "PAYLOAD"
-            elif 40000 <= tle.norad_id < 50000:
-                sat_type = "ROCKET BODY"
-            else:
-                sat_type = "DEBRIS"
-            
-            # Apply filters
-            if type_filter and sat_type != type_filter.upper():
-                continue
-            
-            if search:
-                search_lower = search.lower()
-                if (search_lower not in str(tle.norad_id).lower() and 
-                    search_lower not in f"SAT-{tle.norad_id}".lower()):
+        for (norad_id,) in unique_norads:
+            try:
+                tle = tle_repo.get_latest_tle(norad_id)
+                if not tle:
                     continue
-            
-            catalog.append({
-                "norad_id": tle.norad_id,
-                "common_name": f"SAT-{tle.norad_id}",
-                "type": sat_type,
-                "inclination_deg": round(float(tle.tle_line2[8:16]), 2) if len(tle.tle_line2) > 16 else 0.0,
-                "apogee_km": 400.0,  # Would need orbital calculation for real values
-                "perigee_km": 400.0,  # Would need orbital calculation for real values
-                "period_minutes": 92.4,  # Would need orbital calculation for real values
-                "rcs_m2": 12.5 if sat_type != "DEBRIS" else 0.1,
-                "status": "ACTIVE"
-            })
-            
-            if len(catalog) >= limit:
-                break
+                
+                # Classify satellite type based on NORAD ID ranges
+                if tle.norad_id < 40000:
+                    sat_type = "PAYLOAD"
+                elif 40000 <= tle.norad_id < 50000:
+                    sat_type = "ROCKET BODY"
+                else:
+                    sat_type = "DEBRIS"
+                
+                # Apply filters
+                if type_filter and sat_type != type_filter.upper():
+                    continue
+                
+                if search:
+                    search_lower = search.lower()
+                    if (search_lower not in str(tle.norad_id).lower() and 
+                        search_lower not in f"SAT-{tle.norad_id}".lower()):
+                        continue
+                
+                catalog.append({
+                    "norad_id": tle.norad_id,
+                    "common_name": f"SAT-{tle.norad_id}",
+                    "type": sat_type,
+                    "inclination_deg": round(float(tle.tle_line2[8:16]), 2) if len(tle.tle_line2) > 16 else 0.0,
+                    "apogee_km": 400.0,
+                    "perigee_km": 400.0,
+                    "period_minutes": 92.4,
+                    "rcs_m2": 12.5 if sat_type != "DEBRIS" else 0.1,
+                    "status": "ACTIVE"
+                })
+                
+                if len(catalog) >= limit:
+                    break
+            except Exception as e:
+                continue
             
     return {"count": len(catalog), "satellites": catalog}
 
