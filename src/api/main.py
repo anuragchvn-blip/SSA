@@ -649,8 +649,11 @@ async def get_catalog_statistics(user: dict = Depends(verify_token)):
 
 
 @app.get("/satellites/positions")
-async def get_satellite_positions(user: dict = Depends(verify_token)):
-    """Get real-time propagated positions for all satellites."""
+async def get_satellite_positions(
+    limit: int = 100,  # Reduced to 100 for fast response (2-3 seconds)
+    user: dict = Depends(verify_token)
+):
+    """Get real-time propagated positions for satellites."""
     from src.data.database import db_manager
     from src.data.models import TLE
     from src.propagation.sgp4_engine import sgp4_engine
@@ -663,9 +666,8 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
         
-        # Get latest TLE for EACH unique satellite (not limited)
-        # Query for distinct NORAD IDs, then get latest TLE for each
-        unique_norads = session.query(TLE.norad_id).distinct().all()
+        # Get only 100 satellites for fast response
+        unique_norads = session.query(TLE.norad_id).distinct().limit(limit).all()
         
         for (norad_id,) in unique_norads:
             try:
@@ -676,13 +678,11 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
                 result = sgp4_engine.propagate_to_epoch(tle, now)
                 
                 # Convert geodetic (lat, lon, alt) to ECEF Cartesian for globe visualization
-                # ECEF rotates with Earth, so satellites move relative to Earth surface
                 lat_rad = np.radians(result.latitude_deg)
                 lon_rad = np.radians(result.longitude_deg)
                 alt_m = result.altitude_m
                 
-                # Earth radius
-                R = 6371000  # meters
+                R = 6371000  # Earth radius in meters
                 
                 # ECEF Cartesian coordinates (rotates with Earth)
                 x_ecef = (R + alt_m) * np.cos(lat_rad) * np.cos(lon_rad)
@@ -701,23 +701,25 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
                     "risk": "nominal"
                 })
             except Exception as e:
-                # Skip satellites with propagation errors
                 continue
                 
     return {"timestamp": now.isoformat(), "satellites": positions, "count": len(positions)}
 
 
 @app.get("/satellites/catalog")
-async def get_full_catalog(user: dict = Depends(verify_token)):
-    """Get full satellite catalog with metadata."""
+async def get_full_catalog(
+    limit: int = 200,  # Reduced to 200 for fast response
+    user: dict = Depends(verify_token)
+):
+    """Get satellite catalog with metadata."""
     from src.data.database import db_manager
     from src.data.models import TLE
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
         
-        # Get ALL unique NORAD IDs
-        unique_norads = session.query(TLE.norad_id).distinct().all()
+        # Get limited unique NORAD IDs
+        unique_norads = session.query(TLE.norad_id).distinct().limit(limit).all()
         
         catalog = []
         for (norad_id,) in unique_norads:
