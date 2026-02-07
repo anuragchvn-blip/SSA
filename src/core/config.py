@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import PostgresDsn, RedisDsn, validator
+from pydantic import PostgresDsn, RedisDsn, validator, ConfigDict
 
 
 class DatabaseSettings(BaseSettings):
@@ -129,10 +129,12 @@ class PathSettings(BaseSettings):
     model_version_path: str = "./models"
     orekit_data_path: str = "./orekit-data"
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "allow"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="allow",
+        protected_namespaces=("settings_",)  # Fix Pydantic warning
+    )
 
 
 class Settings(BaseSettings):

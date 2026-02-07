@@ -63,36 +63,69 @@ class TLEAutoUpdater:
     
     async def fetch_active_satellite_catalog(self) -> List[int]:
         """
-        Fetch all active (non-decayed) satellites from Space-Track.org.
+        Fetch ALL active (non-decayed) satellites from Space-Track.org.
+        This fetches the COMPLETE catalog of on-orbit objects.
         
         Returns:
-            List of NORAD IDs for active satellites
+            List of NORAD IDs for ALL active satellites
         """
         try:
             async with self.spacetrack_client:
-                # Query Space-Track for active satellites (decay_date = null)
-                ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).strftime('%Y-%m-%d')
+                # Query Space-Track for ALL active satellites (decay_date = null)
+                # Use recent epoch to ensure we only get satellites with current TLEs
+                seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
                 
-                url = (
-                    f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                    f"/class/gp/decay_date/null-val/epoch/>={ten_days_ago}"
-                    f"/orderby/NORAD_CAT_ID asc/format/json"
-                )
+                # Fetch in chunks to handle large catalog (Space-Track may have 10K+ objects)
+                all_norad_ids = set()
+                chunk_size = 2000
+                offset = 0
                 
-                await self.rate_limiter.acquire()
-                response = await self.spacetrack_client.session.get(url)
+                while True:
+                    url = (
+                        f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
+                        f"/class/gp/decay_date/null-val/epoch/>={seven_days_ago}"
+                        f"/orderby/NORAD_CAT_ID asc/format/json"
+                        f"/limit/{chunk_size}/offset/{offset}"
+                    )
+                    
+                    await self.rate_limiter.acquire()
+                    response = await self.spacetrack_client.session.get(url)
+                    
+                    if response.status_code != 200:
+                        logger.error(f"Failed to fetch active catalog chunk: {response.status_code}")
+                        break
+                    
+                    data = response.json()
+                    if not isinstance(data, list) or len(data) == 0:
+                        # No more data
+                        break
+                    
+                    # Extract NORAD IDs with valid TLE data
+                    chunk_count = 0
+                    for item in data:
+                        if 'NORAD_CAT_ID' in item and 'TLE_LINE1' in item and 'TLE_LINE2' in item:
+                            try:
+                                norad_id = int(item['NORAD_CAT_ID'])
+                                # Verify TLE lines exist and are not empty
+                                if item['TLE_LINE1'] and item['TLE_LINE2']:
+                                    all_norad_ids.add(norad_id)
+                                    chunk_count += 1
+                            except (ValueError, KeyError):
+                                continue
+                    
+                    logger.info(f"Fetched chunk at offset {offset}: {chunk_count} valid satellites")
+                    
+                    # If we got fewer results than chunk_size, we've reached the end
+                    if len(data) < chunk_size:
+                        break
+                    
+                    offset += chunk_size
+                    
+                    # Small delay between chunks to respect rate limits
+                    await asyncio.sleep(2)
                 
-                if response.status_code != 200:
-                    logger.error(f"Failed to fetch active catalog: {response.status_code}")
-                    return []
-                
-                data = response.json()
-                if not isinstance(data, list):
-                    return []
-                
-                # Extract unique NORAD IDs
-                norad_ids = list(set(int(item['NORAD_CAT_ID']) for item in data if 'NORAD_CAT_ID' in item))
-                logger.info(f"Found {len(norad_ids)} active satellites from Space-Track")
+                norad_ids = sorted(list(all_norad_ids))
+                logger.info(f"Found {len(norad_ids)} TOTAL active satellites with valid TLEs from Space-Track")
                 
                 return norad_ids
                 
@@ -128,7 +161,7 @@ class TLEAutoUpdater:
                 new_tle = await self.spacetrack_client.fetch_tle_by_norad_id(norad_id, days_back=7)
                 
                 if not new_tle:
-                    logger.debug(f"No TLE found for NORAD {norad_id}")
+                    logger.debug(f"No TLE found for NORAD {norad_id} (likely decayed/inactive)")
                     return False
                 
                 # Ensure new epoch is timezone-aware
@@ -157,7 +190,12 @@ class TLEAutoUpdater:
                     return True
                     
         except Exception as e:
-            logger.error(f"Failed to update TLE for NORAD {norad_id}: {e}")
+            # Log error but don't crash - satellite might be decayed or data incomplete
+            error_msg = str(e)
+            if "Incomplete TLE data" in error_msg or "No TLE found" in error_msg:
+                logger.debug(f"NORAD {norad_id}: Skipping - {error_msg}")
+            else:
+                logger.warning(f"Failed to update TLE for NORAD {norad_id}: {error_msg}")
             return False
     
     async def update_all_tles(self):
@@ -165,40 +203,42 @@ class TLEAutoUpdater:
         Main update job: Refresh TLEs for all tracked satellites.
         
         Strategy:
-        1. Get all NORAD IDs currently in database
-        2. Fetch active satellite catalog from Space-Track
-        3. Update existing satellites
-        4. Add new active satellites not in database
+        1. Fetch COMPLETE active satellite catalog from Space-Track (all on-orbit objects)
+        2. Update ALL satellites with latest TLEs
+        3. Insert new satellites not previously in database
         """
         async with self._update_lock:
             start_time = datetime.now(timezone.utc)
             logger.info("=" * 80)
-            logger.info("Starting 12-hour TLE auto-update cycle")
+            logger.info("Starting 12-hour TLE auto-update cycle - FULL CATALOG FETCH")
             logger.info("=" * 80)
             
             try:
-                # Step 1: Get tracked satellites
-                tracked_ids = await self.get_all_tracked_norad_ids()
-                
-                # Step 2: Get active satellites from Space-Track
+                # Step 1: Fetch ALL active satellites from Space-Track
+                logger.info("Fetching COMPLETE active satellite catalog from Space-Track.org...")
                 active_ids = await self.fetch_active_satellite_catalog()
                 
-                # Step 3: Combine - update tracked satellites and add new active ones
-                all_ids_to_update = tracked_ids.union(set(active_ids))
+                if not active_ids:
+                    logger.error("Failed to fetch active satellite catalog - aborting update")
+                    return
                 
-                logger.info(f"Total satellites to update: {len(all_ids_to_update)}")
-                logger.info(f"  - Previously tracked: {len(tracked_ids)}")
-                logger.info(f"  - Active from catalog: {len(active_ids)}")
-                logger.info(f"  - New satellites: {len(set(active_ids) - tracked_ids)}")
+                logger.info(f"Total satellites to update: {len(active_ids)}")
+                logger.info(f"This includes ALL active on-orbit objects from Space-Track")
                 
-                # Step 4: Update TLEs in batches (respect rate limits)
+                # Step 2: Update TLEs in batches (respect rate limits)
                 updated_count = 0
                 skipped_count = 0
                 error_count = 0
+                new_satellites = 0
+                
+                # Track which satellites existed before
+                with db_manager.get_session() as session:
+                    repo = TLERepository(session)
+                    existing_norads = {row[0] for row in session.query(TLE.norad_id).distinct().all()}
                 
                 # Process in batches to respect rate limits (300/hour = ~5/minute)
                 batch_size = 50
-                all_ids_list = list(all_ids_to_update)
+                all_ids_list = list(active_ids)
                 
                 for i in range(0, len(all_ids_list), batch_size):
                     batch = all_ids_list[i:i + batch_size]
@@ -209,9 +249,15 @@ class TLEAutoUpdater:
                     
                     for norad_id in batch:
                         try:
+                            # Check if this is a new satellite
+                            is_new = norad_id not in existing_norads
+                            
                             success = await self.update_tle_for_satellite(norad_id)
                             if success:
                                 updated_count += 1
+                                if is_new:
+                                    new_satellites += 1
+                                    existing_norads.add(norad_id)
                             else:
                                 skipped_count += 1
                                 
@@ -233,9 +279,11 @@ class TLEAutoUpdater:
                 logger.info("TLE auto-update cycle complete")
                 logger.info(f"  Duration: {duration:.1f} seconds ({duration/60:.1f} minutes)")
                 logger.info(f"  Updated: {updated_count}")
+                logger.info(f"  New satellites added: {new_satellites}")
                 logger.info(f"  Skipped (up-to-date): {skipped_count}")
                 logger.info(f"  Errors: {error_count}")
-                logger.info(f"  Total processed: {len(all_ids_to_update)}")
+                logger.info(f"  Total processed: {len(all_ids_list)}")
+                logger.info(f"  Total unique satellites in DB: {len(existing_norads)}")
                 logger.info("=" * 80)
                 
             except Exception as e:
