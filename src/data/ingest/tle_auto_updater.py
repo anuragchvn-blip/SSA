@@ -77,31 +77,50 @@ class TLEAutoUpdater:
                 
                 # Fetch in chunks to handle large catalog (Space-Track may have 10K+ objects)
                 all_norad_ids = set()
-                chunk_size = 2000
+                chunk_size = 1000  # Reduced chunk size for better compatibility
                 offset = 0
+                max_chunks = 20  # Safety limit to prevent infinite loops
+                chunk_count = 0
                 
-                while True:
+                while chunk_count < max_chunks:
+                    # Space-Track API format: /class/gp/decay_date/null-val/EPOCH/>2024-01-01/orderby/NORAD_CAT_ID/limit/1000/metadata/false
                     url = (
                         f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                        f"/class/gp/decay_date/null-val/epoch/>={seven_days_ago}"
-                        f"/orderby/NORAD_CAT_ID asc/format/json"
-                        f"/limit/{chunk_size}/offset/{offset}"
+                        f"/class/gp/decay_date/null-val/EPOCH/>now-7/orderby/NORAD_CAT_ID"
+                        f"/limit/{chunk_size}/offset/{offset}/metadata/false/format/json"
                     )
+                    
+                    logger.info(f"Fetching chunk {chunk_count + 1}, offset {offset}...")
                     
                     await self.rate_limiter.acquire()
                     response = await self.spacetrack_client.session.get(url)
                     
                     if response.status_code != 200:
                         logger.error(f"Failed to fetch active catalog chunk: {response.status_code}")
-                        break
+                        logger.error(f"Response: {response.text[:500]}")
+                        # If first chunk fails, try alternative query without offset
+                        if chunk_count == 0:
+                            logger.info("Trying alternative query format...")
+                            alt_url = (
+                                f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
+                                f"/class/gp/decay_date/null-val/EPOCH/>now-7"
+                                f"/orderby/NORAD_CAT_ID/limit/5000/format/json"
+                            )
+                            await self.rate_limiter.acquire()
+                            response = await self.spacetrack_client.session.get(alt_url)
+                            if response.status_code != 200:
+                                logger.error(f"Alternative query also failed: {response.status_code}")
+                                break
+                        else:
+                            break
                     
                     data = response.json()
                     if not isinstance(data, list) or len(data) == 0:
-                        # No more data
+                        logger.info(f"No more data at offset {offset}")
                         break
                     
                     # Extract NORAD IDs with valid TLE data
-                    chunk_count = 0
+                    valid_count = 0
                     for item in data:
                         if 'NORAD_CAT_ID' in item and 'TLE_LINE1' in item and 'TLE_LINE2' in item:
                             try:
@@ -109,17 +128,24 @@ class TLEAutoUpdater:
                                 # Verify TLE lines exist and are not empty
                                 if item['TLE_LINE1'] and item['TLE_LINE2']:
                                     all_norad_ids.add(norad_id)
-                                    chunk_count += 1
+                                    valid_count += 1
                             except (ValueError, KeyError):
                                 continue
                     
-                    logger.info(f"Fetched chunk at offset {offset}: {chunk_count} valid satellites")
+                    logger.info(f"Chunk {chunk_count + 1}: Found {valid_count} valid satellites (total unique: {len(all_norad_ids)})")
                     
                     # If we got fewer results than chunk_size, we've reached the end
                     if len(data) < chunk_size:
+                        logger.info(f"Received {len(data)} results (less than chunk size), catalog complete")
+                        break
+                    
+                    # For alternative query without pagination support, break after first fetch
+                    if chunk_count == 0 and len(data) >= 5000:
+                        logger.info("Single large query returned 5000+ objects, using this as complete catalog")
                         break
                     
                     offset += chunk_size
+                    chunk_count += 1
                     
                     # Small delay between chunks to respect rate limits
                     await asyncio.sleep(2)
@@ -131,6 +157,8 @@ class TLEAutoUpdater:
                 
         except Exception as e:
             logger.error(f"Failed to fetch active catalog: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     async def update_tle_for_satellite(self, norad_id: int) -> bool:
