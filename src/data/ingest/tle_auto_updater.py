@@ -64,30 +64,30 @@ class TLEAutoUpdater:
     async def fetch_active_satellite_catalog(self) -> List[int]:
         """
         Fetch ALL active (non-decayed) satellites from Space-Track.org.
-        This fetches the COMPLETE catalog of on-orbit objects.
+        This fetches ONLY satellites that have valid, recent TLE data.
         
         Returns:
-            List of NORAD IDs for ALL active satellites
+            List of NORAD IDs for satellites with valid current TLEs
         """
         try:
             async with self.spacetrack_client:
-                # Query Space-Track for ALL active satellites (decay_date = null)
-                # Use recent epoch to ensure we only get satellites with current TLEs
-                seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
+                # Strategy: Fetch TLE data directly and extract NORAD IDs
+                # This ensures we ONLY get satellites with actual TLE data
+                logger.info("Fetching satellites with valid TLE data from Space-Track...")
                 
-                # Fetch in chunks to handle large catalog (Space-Track may have 10K+ objects)
                 all_norad_ids = set()
-                chunk_size = 1000  # Reduced chunk size for better compatibility
+                chunk_size = 1000
                 offset = 0
-                max_chunks = 20  # Safety limit to prevent infinite loops
+                max_chunks = 20
                 chunk_count = 0
                 
+                # Use tle_latest class which has ONLY satellites with current TLEs
                 while chunk_count < max_chunks:
-                    # Space-Track API format: /class/gp/decay_date/null-val/EPOCH/>2024-01-01/orderby/NORAD_CAT_ID/limit/1000/metadata/false
                     url = (
                         f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                        f"/class/gp/decay_date/null-val/EPOCH/>now-7/orderby/NORAD_CAT_ID"
-                        f"/limit/{chunk_size}/offset/{offset}/metadata/false/format/json"
+                        f"/class/tle_latest/ORDINAL/1/EPOCH/>now-7"
+                        f"/orderby/NORAD_CAT_ID/limit/{chunk_size}/offset/{offset}"
+                        f"/format/json"
                     )
                     
                     logger.info(f"Fetching chunk {chunk_count + 1}, offset {offset}...")
@@ -96,15 +96,16 @@ class TLEAutoUpdater:
                     response = await self.spacetrack_client.session.get(url)
                     
                     if response.status_code != 200:
-                        logger.error(f"Failed to fetch active catalog chunk: {response.status_code}")
+                        logger.error(f"Failed to fetch TLE catalog chunk: {response.status_code}")
                         logger.error(f"Response: {response.text[:500]}")
-                        # If first chunk fails, try alternative query without offset
+                        
+                        # If first chunk fails, try without offset/pagination
                         if chunk_count == 0:
-                            logger.info("Trying alternative query format...")
+                            logger.info("Trying simpler query without pagination...")
                             alt_url = (
                                 f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                                f"/class/gp/decay_date/null-val/EPOCH/>now-7"
-                                f"/orderby/NORAD_CAT_ID/limit/5000/format/json"
+                                f"/class/tle_latest/ORDINAL/1/EPOCH/>now-7"
+                                f"/orderby/NORAD_CAT_ID/format/json"
                             )
                             await self.rate_limiter.acquire()
                             response = await self.spacetrack_client.session.get(alt_url)
@@ -119,39 +120,37 @@ class TLEAutoUpdater:
                         logger.info(f"No more data at offset {offset}")
                         break
                     
-                    # Extract NORAD IDs with valid TLE data
+                    # Extract NORAD IDs - these are guaranteed to have valid TLEs
                     valid_count = 0
                     for item in data:
-                        if 'NORAD_CAT_ID' in item and 'TLE_LINE1' in item and 'TLE_LINE2' in item:
+                        if 'NORAD_CAT_ID' in item:
                             try:
                                 norad_id = int(item['NORAD_CAT_ID'])
-                                # Verify TLE lines exist and are not empty
-                                if item['TLE_LINE1'] and item['TLE_LINE2']:
-                                    all_norad_ids.add(norad_id)
-                                    valid_count += 1
+                                all_norad_ids.add(norad_id)
+                                valid_count += 1
                             except (ValueError, KeyError):
                                 continue
                     
-                    logger.info(f"Chunk {chunk_count + 1}: Found {valid_count} valid satellites (total unique: {len(all_norad_ids)})")
+                    logger.info(f"Chunk {chunk_count + 1}: Found {valid_count} satellites with TLEs (total unique: {len(all_norad_ids)})")
                     
                     # If we got fewer results than chunk_size, we've reached the end
                     if len(data) < chunk_size:
                         logger.info(f"Received {len(data)} results (less than chunk size), catalog complete")
                         break
                     
-                    # For alternative query without pagination support, break after first fetch
-                    if chunk_count == 0 and len(data) >= 5000:
-                        logger.info("Single large query returned 5000+ objects, using this as complete catalog")
+                    # If no pagination support, break after first large fetch
+                    if chunk_count == 0 and len(data) >= 1000:
+                        logger.info(f"Single query returned {len(data)} objects, using as complete catalog")
                         break
                     
                     offset += chunk_size
                     chunk_count += 1
                     
-                    # Small delay between chunks to respect rate limits
+                    # Small delay between chunks
                     await asyncio.sleep(2)
                 
                 norad_ids = sorted(list(all_norad_ids))
-                logger.info(f"Found {len(norad_ids)} TOTAL active satellites with valid TLEs from Space-Track")
+                logger.info(f"Found {len(norad_ids)} TOTAL satellites with valid current TLEs")
                 
                 return norad_ids
                 
