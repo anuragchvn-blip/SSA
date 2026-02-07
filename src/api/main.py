@@ -643,6 +643,7 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
     from src.data.models import TLE
     from src.propagation.sgp4_engine import sgp4_engine
     from sqlalchemy import func
+    import numpy as np
     
     now = datetime.now(timezone.utc)
     positions = []
@@ -661,12 +662,27 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
                     continue
                     
                 result = sgp4_engine.propagate_to_epoch(tle, now)
+                
+                # Convert geodetic (lat, lon, alt) to ECEF Cartesian for globe visualization
+                # ECEF rotates with Earth, so satellites move relative to Earth surface
+                lat_rad = np.radians(result.latitude_deg)
+                lon_rad = np.radians(result.longitude_deg)
+                alt_m = result.altitude_m
+                
+                # Earth radius
+                R = 6371000  # meters
+                
+                # ECEF Cartesian coordinates (rotates with Earth)
+                x_ecef = (R + alt_m) * np.cos(lat_rad) * np.cos(lon_rad)
+                y_ecef = (R + alt_m) * np.cos(lat_rad) * np.sin(lon_rad) 
+                z_ecef = (R + alt_m) * np.sin(lat_rad)
+                
                 positions.append({
                     "norad_id": tle.norad_id,
                     "name": f"SAT-{tle.norad_id}",
-                    "x": result.cartesian_state.x / 1000.0,  # Convert to km
-                    "y": result.cartesian_state.y / 1000.0,
-                    "z": result.cartesian_state.z / 1000.0,
+                    "x": x_ecef / 1000.0,  # Convert to km
+                    "y": y_ecef / 1000.0,
+                    "z": z_ecef / 1000.0,
                     "lat": result.latitude_deg,
                     "lon": result.longitude_deg,
                     "alt": result.altitude_m / 1000.0,
