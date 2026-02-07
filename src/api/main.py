@@ -948,7 +948,7 @@ async def get_full_catalog(
 async def get_institutional_catalog(
     type_filter: Optional[str] = None,
     search: Optional[str] = None,
-    limit: int = 10000,
+    limit: int = 100,  # Default to 100 for fast response
     user: dict = Depends(verify_token)
 ):
     """Get institutional satellite catalog with advanced filtering."""
@@ -958,11 +958,20 @@ async def get_institutional_catalog(
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
         
-        # Get ALL unique NORAD IDs
-        unique_norads = session.query(TLE.norad_id).distinct().all()
+        # Get limited unique NORAD IDs for performance
+        query = session.query(TLE.norad_id).distinct()
+        
+        # Apply search filter at DB level if provided
+        if search and search.isdigit():
+            query = query.filter(TLE.norad_id == int(search))
+        
+        unique_norads = query.limit(limit * 2).all()  # Get 2x limit for filtering
         
         catalog = []
         for (norad_id,) in unique_norads:
+            if len(catalog) >= limit:
+                break
+                
             try:
                 tle = tle_repo.get_latest_tle(norad_id)
                 if not tle:
@@ -976,11 +985,12 @@ async def get_institutional_catalog(
                 else:
                     sat_type = "DEBRIS"
                 
-                # Apply filters
+                # Apply type filter
                 if type_filter and sat_type != type_filter.upper():
                     continue
                 
-                if search:
+                # Apply search filter (if not numeric)
+                if search and not search.isdigit():
                     search_lower = search.lower()
                     if (search_lower not in str(tle.norad_id).lower() and 
                         search_lower not in f"SAT-{tle.norad_id}".lower()):
@@ -997,13 +1007,10 @@ async def get_institutional_catalog(
                     "rcs_m2": 12.5 if sat_type != "DEBRIS" else 0.1,
                     "status": "ACTIVE"
                 })
-                
-                if len(catalog) >= limit:
-                    break
             except Exception as e:
                 continue
             
-    return {"count": len(catalog), "satellites": catalog}
+    return {"count": len(catalog), "satellites": catalog, "total_available": len(unique_norads)}
 
 
 @app.get("/intelligence/summary")
