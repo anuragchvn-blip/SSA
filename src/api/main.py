@@ -59,6 +59,58 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start TLE auto-updater: {e}")
     
+    # Generate conjunction events if database is empty
+    try:
+        with db_manager.get_session() as session:
+            conj_repo = ConjunctionEventRepository(session)
+            existing_events = conj_repo.get_recent_events(hours_back=168, limit=10)
+            
+            if len(existing_events) < 5:
+                logger.info("Generating initial conjunction events...")
+                from src.conjunction.screening import conjunction_screener
+                
+                tle_repo = TLERepository(session)
+                all_tles = tle_repo.get_recent_tles(hours_back=72, limit=100)
+                
+                if len(all_tles) >= 10:
+                    # Try multiple primaries to generate conjunctions
+                    events_created = 0
+                    for i, primary in enumerate(all_tles[:20]):
+                        if events_created >= 20:  # Generate up to 20 conjunction events
+                            break
+                            
+                        catalog = [tle for tle in all_tles if tle.norad_id != primary.norad_id][:30]
+                        try:
+                            candidates = conjunction_screener.screen_catalog(
+                                primary_tle=primary,
+                                catalog_tles=catalog,
+                                screening_threshold_km=100.0,
+                                time_window_hours=72.0
+                            )
+                            
+                            if candidates:
+                                refined = conjunction_screener.refine_candidates(candidates[:5])
+                                events = conjunction_screener.create_conjunction_events(
+                                    primary_norad_id=primary.norad_id,
+                                    refined_results=refined,
+                                    probability_threshold=1e-10
+                                )
+                                
+                                for event in events:
+                                    conj_repo.create(event)
+                                    events_created += 1
+                                
+                                session.commit()
+                        except Exception as e:
+                            logger.debug(f"Skipped primary {primary.norad_id}: {e}")
+                            continue
+                    
+                    logger.info(f"Generated {events_created} initial conjunction events")
+                else:
+                    logger.info("Not enough TLEs for conjunction generation yet")
+    except Exception as e:
+        logger.warning(f"Failed to generate initial conjunctions: {e}")
+    
     logger.info("SSA Conjunction Analysis Engine started")
     
     yield
@@ -736,17 +788,14 @@ async def get_institutional_catalog(
 async def get_intelligence_summary(user: dict = Depends(verify_token)):
     """Get intelligence and security summary."""
     from src.data.database import db_manager
+    from src.data.models import TLE
     from src.data.storage.conjunction_repository import ConjunctionEventRepository
     from src.data.storage.tle_repository import TLERepository
     from datetime import datetime, timedelta, timezone
     
     with db_manager.get_session() as session:
-        # Get satellite count from TLE repository
-        tle_repo = TLERepository(session)
-        recent_tles = tle_repo.get_recent_tles(hours_back=168, limit=1000)
-        
-        # Remove duplicates to get unique satellite count
-        unique_satellites = len(set(tle.norad_id for tle in recent_tles))
+        # Get ACTUAL satellite count from database (all unique NORAD IDs)
+        unique_satellites = session.query(TLE.norad_id).distinct().count()
         
         # Get conjunction events from repository
         conj_repo = ConjunctionEventRepository(session)
@@ -758,7 +807,8 @@ async def get_intelligence_summary(user: dict = Depends(verify_token)):
         high_risk_events = [c for c in recent_conjunctions if c.probability >= 1e-4]
         
         # Get maneuver detections (mock for now, would need maneuver detection data)
-        # For now, we'll use the number of TLE updates as a proxy for maneuver activity
+        tle_repo = TLERepository(session)
+        recent_tles = tle_repo.get_recent_tles(hours_back=24, limit=1000)
         maneuver_detections = len(recent_tles) // 10  # Rough estimate
         
         return {
