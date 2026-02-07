@@ -66,50 +66,62 @@ async def lifespan(app: FastAPI):
             existing_events = conj_repo.get_recent_events(hours_back=168, limit=10)
             
             if len(existing_events) < 5:
-                logger.info("Generating initial conjunction events...")
-                from src.conjunction.screening import conjunction_screener
+                logger.info("Generating initial conjunction events in background...")
                 
-                tle_repo = TLERepository(session)
-                all_tles = tle_repo.get_recent_tles(hours_back=72, limit=100)
+                # Run conjunction generation in background to not block API startup
+                async def generate_conjunctions_background():
+                    try:
+                        import asyncio
+                        from src.conjunction.screening import conjunction_screener
+                        
+                        with db_manager.get_session() as bg_session:
+                            tle_repo = TLERepository(bg_session)
+                            conj_repo = ConjunctionEventRepository(bg_session)
+                            
+                            all_tles = tle_repo.get_recent_tles(hours_back=72, limit=100)
+                            
+                            if len(all_tles) >= 10:
+                                events_created = 0
+                                for i, primary in enumerate(all_tles[:10]):  # Reduced to 10 for faster startup
+                                    if events_created >= 10:  # Generate 10 events
+                                        break
+                                        
+                                    catalog = [tle for tle in all_tles if tle.norad_id != primary.norad_id][:20]
+                                    try:
+                                        candidates = conjunction_screener.screen_catalog(
+                                            primary_tle=primary,
+                                            catalog_tles=catalog,
+                                            screening_threshold_km=100.0,
+                                            time_window_hours=72.0
+                                        )
+                                        
+                                        if candidates:
+                                            refined = conjunction_screener.refine_candidates(candidates[:3])
+                                            events = conjunction_screener.create_conjunction_events(
+                                                primary_norad_id=primary.norad_id,
+                                                refined_results=refined,
+                                                probability_threshold=1e-10
+                                            )
+                                            
+                                            for event in events:
+                                                conj_repo.create(event)
+                                                events_created += 1
+                                            
+                                            bg_session.commit()
+                                    except Exception as e:
+                                        logger.debug(f"Skipped primary {primary.norad_id}: {e}")
+                                        continue
+                                
+                                logger.info(f"Generated {events_created} initial conjunction events in background")
+                    except Exception as e:
+                        logger.warning(f"Background conjunction generation failed: {e}")
                 
-                if len(all_tles) >= 10:
-                    # Try multiple primaries to generate conjunctions
-                    events_created = 0
-                    for i, primary in enumerate(all_tles[:20]):
-                        if events_created >= 20:  # Generate up to 20 conjunction events
-                            break
-                            
-                        catalog = [tle for tle in all_tles if tle.norad_id != primary.norad_id][:30]
-                        try:
-                            candidates = conjunction_screener.screen_catalog(
-                                primary_tle=primary,
-                                catalog_tles=catalog,
-                                screening_threshold_km=100.0,
-                                time_window_hours=72.0
-                            )
-                            
-                            if candidates:
-                                refined = conjunction_screener.refine_candidates(candidates[:5])
-                                events = conjunction_screener.create_conjunction_events(
-                                    primary_norad_id=primary.norad_id,
-                                    refined_results=refined,
-                                    probability_threshold=1e-10
-                                )
-                                
-                                for event in events:
-                                    conj_repo.create(event)
-                                    events_created += 1
-                                
-                                session.commit()
-                        except Exception as e:
-                            logger.debug(f"Skipped primary {primary.norad_id}: {e}")
-                            continue
-                    
-                    logger.info(f"Generated {events_created} initial conjunction events")
-                else:
-                    logger.info("Not enough TLEs for conjunction generation yet")
+                # Schedule background task (non-blocking)
+                import asyncio
+                asyncio.create_task(generate_conjunctions_background())
+                logger.info("Conjunction generation scheduled in background")
     except Exception as e:
-        logger.warning(f"Failed to generate initial conjunctions: {e}")
+        logger.warning(f"Failed to schedule conjunction generation: {e}")
     
     logger.info("SSA Conjunction Analysis Engine started")
     
