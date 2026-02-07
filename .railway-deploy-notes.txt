@@ -1,0 +1,57 @@
+RAILWAY DEPLOYMENT - TLE AUTO-UPDATER
+
+The TLE auto-updater is now integrated and will start automatically when deployed to Railway.
+
+=== WHAT HAPPENS ON DEPLOYMENT ===
+
+1. Railway runs: bash init_database.sh
+2. Script initializes database tables
+3. Script populates initial TLE data (railway_init.py)
+4. Script starts: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+5. FastAPI lifespan event triggers → TLE auto-updater starts
+6. First TLE update runs immediately
+7. Subsequent updates run every 12 hours automatically
+
+=== ENVIRONMENT VARIABLES REQUIRED ===
+
+Ensure these are set in Railway dashboard:
+
+SPACETRACK_USERNAME=your_email@example.com
+SPACETRACK_PASSWORD=your_password
+DATABASE_URL=postgresql://... (Railway provides this automatically)
+
+=== MONITORING ===
+
+Check auto-updater status via API:
+curl -H "Authorization: Bearer test-token" https://your-app.railway.app/status
+
+Response includes:
+{
+  "tle_auto_updater": {
+    "enabled": true,
+    "update_interval": "12 hours",
+    "next_update": "2026-02-07T21:17:30+00:00"
+  }
+}
+
+=== LOGS ===
+
+Railway logs will show:
+- "TLE auto-updater started - refreshes every 12 hours" on startup
+- "Starting 12-hour TLE auto-update cycle" every 12 hours
+- "TLE auto-update cycle complete" with statistics
+
+=== FILES CHANGED ===
+
+- requirements.txt → Added APScheduler==3.10.4
+- src/data/ingest/tle_auto_updater.py → NEW (auto-updater service)
+- src/api/main.py → Added auto-updater to lifespan
+- manage_tle_updater.py → NEW (CLI tool for testing)
+
+=== DEPLOYMENT COMMAND ===
+
+git add .
+git commit -m "Add 12-hour TLE auto-updater for Railway PostgreSQL"
+git push origin main
+
+Railway will auto-deploy and the updater will start immediately.

@@ -48,11 +48,26 @@ async def lifespan(app: FastAPI):
         logger.error(f"Database health check failed: {str(e)}")
         raise
     
+    # Start TLE auto-updater (12-hour refresh cycle)
+    from src.data.ingest.tle_auto_updater import tle_auto_updater
+    try:
+        if settings.spacetrack.spacetrack_username and settings.spacetrack.spacetrack_password:
+            tle_auto_updater.start()
+            logger.info("TLE auto-updater started - refreshes every 12 hours")
+        else:
+            logger.warning("Space-Track credentials not configured - TLE auto-update disabled")
+    except Exception as e:
+        logger.error(f"Failed to start TLE auto-updater: {e}")
+    
     logger.info("SSA Conjunction Analysis Engine started")
     
     yield
     
     # Shutdown
+    try:
+        tle_auto_updater.stop()
+    except:
+        pass
     close_db()
     logger.info("SSA Conjunction Analysis Engine stopped")
 
@@ -146,6 +161,8 @@ async def system_status(user: dict = Depends(verify_token)):
     """Get system status and statistics."""
     # Get statistics from repositories
     from src.data.database import db_manager
+    from src.data.ingest.tle_auto_updater import tle_auto_updater
+    
     try:
         with db_manager.get_session() as session:
             tle_repo = TLERepository(session)
@@ -158,6 +175,9 @@ async def system_status(user: dict = Depends(verify_token)):
             except:
                 conj_stats = {"total_events": 0, "high_risk_events": 0}
         
+        # Get TLE auto-updater status
+        updater_status = tle_auto_updater.get_status()
+        
         return {
             "system_status": "operational",
             "database_connected": True,
@@ -166,7 +186,12 @@ async def system_status(user: dict = Depends(verify_token)):
             "conjunctions_today": conj_stats.get("total_events", 0),
             "high_risk_conjunctions_today": conj_stats.get("high_risk_events", 0),
             "last_data_ingestion": tle_stats.get("generated_at", "unknown"),
-            "uptime_minutes": 142  # Demo value
+            "uptime_minutes": 142,  # Demo value
+            "tle_auto_updater": {
+                "enabled": updater_status["is_running"],
+                "update_interval": "12 hours",
+                "next_update": updater_status["next_run"]
+            }
         }
     except Exception as e:
         logger.error(f"Status check failed: {e}")
