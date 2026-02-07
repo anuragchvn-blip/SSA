@@ -288,17 +288,29 @@ class TLEAutoUpdater:
                             else:
                                 skipped_count += 1
                                 
+                        except asyncio.CancelledError:
+                            logger.warning(f"Update cancelled at NORAD {norad_id} (batch {batch_num}/{total_batches})")
+                            logger.info(f"Partial results: Updated {updated_count}, New {new_satellites}, Skipped {skipped_count}, Errors {error_count}")
+                            raise  # Re-raise to stop gracefully
                         except Exception as e:
                             logger.error(f"Error updating NORAD {norad_id}: {e}")
                             error_count += 1
                         
                         # Small delay to respect rate limits
-                        await asyncio.sleep(0.5)
+                        try:
+                            await asyncio.sleep(0.5)
+                        except asyncio.CancelledError:
+                            logger.warning("Update cancelled during sleep, stopping gracefully")
+                            raise
                     
                     # Longer delay between batches
                     if i + batch_size < len(all_ids_list):
                         logger.info(f"Batch {batch_num} complete. Pausing before next batch...")
-                        await asyncio.sleep(5)
+                        try:
+                            await asyncio.sleep(5)
+                        except asyncio.CancelledError:
+                            logger.warning("Update cancelled between batches, stopping gracefully")
+                            raise
                 
                 duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 
@@ -313,6 +325,15 @@ class TLEAutoUpdater:
                 logger.info(f"  Total unique satellites in DB: {len(existing_norads)}")
                 logger.info("=" * 80)
                 
+            except asyncio.CancelledError:
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.warning("=" * 80)
+                logger.warning("TLE auto-update cycle CANCELLED (shutdown requested)")
+                logger.warning(f"  Duration before cancellation: {duration:.1f} seconds")
+                logger.warning(f"  Partial progress: Updated {updated_count}, New {new_satellites}, Skipped {skipped_count}")
+                logger.warning("  Next scheduled update will continue from latest TLEs")
+                logger.warning("=" * 80)
+                # Don't re-raise - allow graceful shutdown
             except Exception as e:
                 logger.error(f"TLE auto-update cycle failed: {e}")
     
