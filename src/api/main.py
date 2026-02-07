@@ -588,6 +588,7 @@ async def get_catalog_statistics(user: dict = Depends(verify_token)):
 async def get_satellite_positions(user: dict = Depends(verify_token)):
     """Get real-time propagated positions for all satellites."""
     from src.data.database import db_manager
+    from src.data.models import TLE
     from src.propagation.sgp4_engine import sgp4_engine
     from sqlalchemy import func
     
@@ -630,6 +631,7 @@ async def get_satellite_positions(user: dict = Depends(verify_token)):
 async def get_full_catalog(user: dict = Depends(verify_token)):
     """Get full satellite catalog with metadata."""
     from src.data.database import db_manager
+    from src.data.models import TLE
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
@@ -677,6 +679,7 @@ async def get_institutional_catalog(
 ):
     """Get institutional satellite catalog with advanced filtering."""
     from src.data.database import db_manager
+    from src.data.models import TLE
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
