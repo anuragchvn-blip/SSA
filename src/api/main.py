@@ -965,6 +965,16 @@ async def get_institutional_catalog(
         if search and search.isdigit():
             query = query.filter(TLE.norad_id == int(search))
         
+        # Apply type filter at DB level for better performance
+        if type_filter:
+            type_upper = type_filter.upper()
+            if type_upper == "PAYLOAD":
+                query = query.filter(TLE.norad_id < 40000)
+            elif type_upper == "ROCKET BODY":
+                query = query.filter(TLE.norad_id >= 40000, TLE.norad_id < 50000)
+            elif type_upper == "DEBRIS":
+                query = query.filter(TLE.norad_id >= 50000)
+        
         unique_norads = query.limit(limit * 2).all()  # Get 2x limit for filtering
         
         catalog = []
@@ -996,15 +1006,48 @@ async def get_institutional_catalog(
                         search_lower not in f"SAT-{tle.norad_id}".lower()):
                         continue
                 
+                # Calculate real orbital parameters from TLE
+                try:
+                    # Extract mean motion (revolutions per day) from TLE line 2
+                    mean_motion = float(tle.tle_line2[52:63])  # rev/day
+                    
+                    # Calculate semi-major axis using mean motion
+                    # n = sqrt(μ/a^3) where μ = 398600.4418 km^3/s^2 (Earth's gravitational parameter)
+                    # a = (μ/(n*2π/86400)^2)^(1/3)
+                    mu = 398600.4418  # km^3/s^2
+                    n_rad_per_sec = mean_motion * 2 * 3.14159265359 / 86400  # convert rev/day to rad/s
+                    semi_major_axis_km = (mu / (n_rad_per_sec ** 2)) ** (1/3)
+                    
+                    # Extract eccentricity from TLE line 2
+                    eccentricity_str = tle.tle_line2[26:33]
+                    eccentricity = float("0." + eccentricity_str.strip())
+                    
+                    # Calculate apogee and perigee
+                    earth_radius_km = 6371.0
+                    apogee_km = semi_major_axis_km * (1 + eccentricity) - earth_radius_km
+                    perigee_km = semi_major_axis_km * (1 - eccentricity) - earth_radius_km
+                    
+                    # Calculate orbital period in minutes
+                    period_minutes = 1440.0 / mean_motion  # 1440 min/day
+                    
+                    # Extract inclination from TLE line 2
+                    inclination_deg = round(float(tle.tle_line2[8:16]), 2)
+                except Exception as e:
+                    # Fallback to default values if calculation fails
+                    apogee_km = 400.0
+                    perigee_km = 400.0
+                    period_minutes = 92.4
+                    inclination_deg = 0.0
+                
                 catalog.append({
                     "norad_id": tle.norad_id,
                     "common_name": f"SAT-{tle.norad_id}",
                     "type": sat_type,
-                    "inclination_deg": round(float(tle.tle_line2[8:16]), 2) if len(tle.tle_line2) > 16 else 0.0,
-                    "apogee_km": 400.0,
-                    "perigee_km": 400.0,
-                    "period_minutes": 92.4,
-                    "rcs_m2": 12.5 if sat_type != "DEBRIS" else 0.1,
+                    "inclination_deg": inclination_deg,
+                    "apogee_km": round(apogee_km, 1),
+                    "perigee_km": round(perigee_km, 1),
+                    "period_minutes": round(period_minutes, 2),
+                    "rcs_m2": 12.5 if sat_type == "PAYLOAD" else (3.5 if sat_type == "ROCKET BODY" else 0.1),
                     "status": "ACTIVE"
                 })
             except Exception as e:
