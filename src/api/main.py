@@ -31,9 +31,21 @@ logger = get_logger(__name__)
 security = HTTPBearer()
 
 
+# Global cache for satellite positions
+position_cache = {
+    "timestamp": None,
+    "positions": [],
+    "lock": None
+}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle management."""
+    import asyncio
+    
+    # Initialize lock for position cache
+    position_cache["lock"] = asyncio.Lock()
+    
     # Startup
     configure_logging()
     init_db()
@@ -123,11 +135,147 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to schedule conjunction generation: {e}")
     
+    # Start background position cache updater
+    async def update_position_cache_loop():
+        """Background task to update satellite positions every 60 seconds."""
+        from src.data.models import TLE
+        from src.propagation.sgp4_engine import sgp4_engine
+        import numpy as np
+        
+        while True:
+            try:
+                await asyncio.sleep(60)  # Update every 60 seconds
+                
+                async with position_cache["lock"]:
+                    logger.info("Updating satellite position cache...")
+                    now = datetime.now(timezone.utc)
+                    positions = []
+                    
+                    with db_manager.get_session() as session:
+                        tle_repo = TLERepository(session)
+                        unique_norads = session.query(TLE.norad_id).distinct().all()
+                        
+                        for (norad_id,) in unique_norads:
+                            try:
+                                tle = tle_repo.get_latest_tle(norad_id)
+                                if not tle:
+                                    continue
+                                    
+                                result = sgp4_engine.propagate_to_epoch(tle, now)
+                                
+                                lat_rad = np.radians(result.latitude_deg)
+                                lon_rad = np.radians(result.longitude_deg)
+                                alt_m = result.altitude_m
+                                R = 6371000
+                                
+                                x_ecef = (R + alt_m) * np.cos(lat_rad) * np.cos(lon_rad)
+                                y_ecef = (R + alt_m) * np.cos(lat_rad) * np.sin(lon_rad)
+                                z_ecef = (R + alt_m) * np.sin(lat_rad)
+                                
+                                positions.append({
+                                    "norad_id": tle.norad_id,
+                                    "name": f"SAT-{tle.norad_id}",
+                                    "x": x_ecef / 1000.0,
+                                    "y": y_ecef / 1000.0,
+                                    "z": z_ecef / 1000.0,
+                                    "lat": result.latitude_deg,
+                                    "lon": result.longitude_deg,
+                                    "alt": result.altitude_m / 1000.0,
+                                    "risk": "nominal"
+                                })
+                            except Exception as e:
+                                continue
+                    
+                    position_cache["positions"] = positions
+                    position_cache["timestamp"] = now
+                    logger.info(f"Position cache updated: {len(positions)} satellites")
+                    
+            except asyncio.CancelledError:
+                logger.info("Position cache updater cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Position cache update failed: {e}")
+                await asyncio.sleep(60)
+    
+    # Start position cache updater
+    cache_task = asyncio.create_task(update_position_cache_loop())
+    logger.info("Position cache updater started")
+    
+    # Start continuous conjunction screening
+    async def continuous_conjunction_screening():
+        """Background task to continuously generate conjunctions."""
+        from src.conjunction.screening import conjunction_screener
+        
+        while True:
+            try:
+                await asyncio.sleep(300)  # Screen every 5 minutes
+                
+                logger.info("Running continuous conjunction screening...")
+                with db_manager.get_session() as session:
+                    tle_repo = TLERepository(session)
+                    conj_repo = ConjunctionEventRepository(session)
+                    
+                    all_tles = tle_repo.get_recent_tles(hours_back=72, limit=50)
+                    
+                    if len(all_tles) >= 10:
+                        events_created = 0
+                        for i, primary in enumerate(all_tles[:15]):
+                            if events_created >= 20:
+                                break
+                                
+                            catalog = [tle for tle in all_tles if tle.norad_id != primary.norad_id][:30]
+                            try:
+                                candidates = conjunction_screener.screen_catalog(
+                                    primary_tle=primary,
+                                    catalog_tles=catalog,
+                                    screening_threshold_km=100.0,
+                                    time_window_hours=72.0
+                                )
+                                
+                                if candidates:
+                                    refined = conjunction_screener.refine_candidates(candidates[:3])
+                                    events = conjunction_screener.create_conjunction_events(
+                                        primary_norad_id=primary.norad_id,
+                                        refined_results=refined,
+                                        probability_threshold=1e-10
+                                    )
+                                    
+                                    for event in events:
+                                        conj_repo.create(event)
+                                        events_created += 1
+                                    
+                                    session.commit()
+                            except Exception as e:
+                                continue
+                        
+                        logger.info(f"Continuous screening generated {events_created} new conjunctions")
+                        
+            except asyncio.CancelledError:
+                logger.info("Conjunction screening cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Continuous conjunction screening failed: {e}")
+                await asyncio.sleep(300)
+    
+    # Start conjunction screening
+    screening_task = asyncio.create_task(continuous_conjunction_screening())
+    logger.info("Continuous conjunction screening started")
+    
     logger.info("SSA Conjunction Analysis Engine started")
     
     yield
     
     # Shutdown
+    cache_task.cancel()
+    screening_task.cancel()
+    try:
+        await cache_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await screening_task
+    except asyncio.CancelledError:
+        pass
     try:
         tle_auto_updater.stop()
     except:
@@ -146,14 +294,36 @@ app = FastAPI(
     redoc_url="/api/redoc"
 )
 
-# Add CORS middleware
+# Add CORS middleware with explicit configuration for Vercel frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=[
+        "*",  # Allow all origins for now
+        "https://ssa-frontend.vercel.app",
+        "https://*.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:8000"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "*",
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With"
+    ],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight for 1 hour
 )
+
+
+# Add explicit OPTIONS handler for all routes
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Handle CORS preflight OPTIONS requests."""
+    return {"status": "ok"}
 
 
 # Request/Response models
@@ -207,15 +377,27 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
     return {"user_id": "test-user", "role": "analyst"}
 
 
-# Health check endpoint
+# Health check endpoint (no auth required)
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint - no authentication required."""
     return {
         "status": "healthy",
         "service": "SSA Conjunction Analysis Engine",
         "version": "1.0.0",
-        "timestamp": datetime.utcnow().isoformat() + "Z"
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "cors": "enabled"
+    }
+
+
+# Root endpoint for testing
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "message": "SSA Conjunction Analysis Engine API",
+        "status": "operational",
+        "docs": "/api/docs"
     }
 
 
@@ -650,24 +832,33 @@ async def get_catalog_statistics(user: dict = Depends(verify_token)):
 
 @app.get("/satellites/positions")
 async def get_satellite_positions(
-    limit: int = 100,  # Reduced to 100 for fast response (2-3 seconds)
     user: dict = Depends(verify_token)
 ):
-    """Get real-time propagated positions for satellites."""
+    """Get real-time propagated positions for ALL satellites from cache."""
     from src.data.database import db_manager
     from src.data.models import TLE
     from src.propagation.sgp4_engine import sgp4_engine
-    from sqlalchemy import func
     import numpy as np
     
+    # Return from cache if available
+    async with position_cache["lock"]:
+        if position_cache["positions"] and position_cache["timestamp"]:
+            cache_age = (datetime.now(timezone.utc) - position_cache["timestamp"]).total_seconds()
+            if cache_age < 120:  # Cache valid for 2 minutes
+                return {
+                    "timestamp": position_cache["timestamp"].isoformat(),
+                    "satellites": position_cache["positions"],
+                    "count": len(position_cache["positions"]),
+                    "cached": True
+                }
+    
+    # Fallback: generate on demand (limited to 100)
     now = datetime.now(timezone.utc)
     positions = []
     
     with db_manager.get_session() as session:
         tle_repo = TLERepository(session)
-        
-        # Get only 100 satellites for fast response
-        unique_norads = session.query(TLE.norad_id).distinct().limit(limit).all()
+        unique_norads = session.query(TLE.norad_id).distinct().limit(100).all()
         
         for (norad_id,) in unique_norads:
             try:
@@ -677,22 +868,19 @@ async def get_satellite_positions(
                     
                 result = sgp4_engine.propagate_to_epoch(tle, now)
                 
-                # Convert geodetic (lat, lon, alt) to ECEF Cartesian for globe visualization
                 lat_rad = np.radians(result.latitude_deg)
                 lon_rad = np.radians(result.longitude_deg)
                 alt_m = result.altitude_m
+                R = 6371000
                 
-                R = 6371000  # Earth radius in meters
-                
-                # ECEF Cartesian coordinates (rotates with Earth)
                 x_ecef = (R + alt_m) * np.cos(lat_rad) * np.cos(lon_rad)
-                y_ecef = (R + alt_m) * np.cos(lat_rad) * np.sin(lon_rad) 
+                y_ecef = (R + alt_m) * np.cos(lat_rad) * np.sin(lon_rad)
                 z_ecef = (R + alt_m) * np.sin(lat_rad)
                 
                 positions.append({
                     "norad_id": tle.norad_id,
                     "name": f"SAT-{tle.norad_id}",
-                    "x": x_ecef / 1000.0,  # Convert to km
+                    "x": x_ecef / 1000.0,
                     "y": y_ecef / 1000.0,
                     "z": z_ecef / 1000.0,
                     "lat": result.latitude_deg,
@@ -703,7 +891,7 @@ async def get_satellite_positions(
             except Exception as e:
                 continue
                 
-    return {"timestamp": now.isoformat(), "satellites": positions, "count": len(positions)}
+    return {"timestamp": now.isoformat(), "satellites": positions, "count": len(positions), "cached": False}
 
 
 @app.get("/satellites/catalog")
