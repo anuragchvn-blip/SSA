@@ -36,7 +36,7 @@ Response includes:
 
 === LOGS ===
 
-Railway logs will show:
+Railway logs will show:e
 - "TLE auto-updater started - refreshes every 12 hours" on startup
 - "Starting 12-hour TLE auto-update cycle" every 12 hours
 - "TLE auto-update cycle complete" with statistics

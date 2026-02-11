@@ -81,19 +81,22 @@ class TLEAutoUpdater:
                 max_chunks = 20
                 chunk_count = 0
                 
-                # Use tle_latest class which has ONLY satellites with current TLEs
+                # Use gp class (current recommended) with epoch filter for recent TLEs
+                base_url = f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
                 while chunk_count < max_chunks:
-                    url = (
-                        f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                        f"/class/tle_latest/ORDINAL/1/EPOCH/>now-7"
-                        f"/orderby/NORAD_CAT_ID/limit/{chunk_size}/offset/{offset}"
-                        f"/format/json"
-                    )
+                    params = {
+                        "class": "gp",
+                        "epoch": ">now-7",
+                        "orderby": "NORAD_CAT_ID",
+                        "limit": chunk_size,
+                        "offset": offset,
+                        "format": "json"
+                    }
                     
                     logger.info(f"Fetching chunk {chunk_count + 1}, offset {offset}...")
                     
                     await self.rate_limiter.acquire()
-                    response = await self.spacetrack_client.session.get(url)
+                    response = await self.spacetrack_client.session.get(base_url, params=params)
                     
                     if response.status_code != 200:
                         logger.error(f"Failed to fetch TLE catalog chunk: {response.status_code}")
@@ -102,13 +105,14 @@ class TLEAutoUpdater:
                         # If first chunk fails, try without offset/pagination
                         if chunk_count == 0:
                             logger.info("Trying simpler query without pagination...")
-                            alt_url = (
-                                f"{self.spacetrack_client.BASE_URL}{self.spacetrack_client.QUERY_ENDPOINT}"
-                                f"/class/tle_latest/ORDINAL/1/EPOCH/>now-7"
-                                f"/orderby/NORAD_CAT_ID/format/json"
-                            )
+                            alt_params = {
+                                "class": "gp",
+                                "epoch": ">now-7",
+                                "orderby": "NORAD_CAT_ID",
+                                "format": "json"
+                            }
                             await self.rate_limiter.acquire()
-                            response = await self.spacetrack_client.session.get(alt_url)
+                            response = await self.spacetrack_client.session.get(base_url, params=alt_params)
                             if response.status_code != 200:
                                 logger.error(f"Alternative query also failed: {response.status_code}")
                                 break
